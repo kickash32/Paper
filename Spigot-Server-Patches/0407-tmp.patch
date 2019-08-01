@@ -1,4 +1,4 @@
-From e28af5f380bff4ac714df25464a7afe4e5d7255a Mon Sep 17 00:00:00 2001
+From c86b59727508f33bdbd63c5aac868a93090f9b34 Mon Sep 17 00:00:00 2001
 From: kickash32 <kickash32@gmail.com>
 Date: Thu, 1 Aug 2019 06:07:30 +0500
 Subject: [PATCH] tmp
@@ -20,34 +20,81 @@ index 318a470ee..b6108fece 100644
 +        fastDrainWater = getBoolean("fast-drain.water", false);
 +    }
  }
+diff --git a/src/main/java/net/minecraft/server/FluidTypeFlowing.java b/src/main/java/net/minecraft/server/FluidTypeFlowing.java
+index 4660b9538..37b2af0b8 100644
+--- a/src/main/java/net/minecraft/server/FluidTypeFlowing.java
++++ b/src/main/java/net/minecraft/server/FluidTypeFlowing.java
+@@ -481,7 +481,7 @@ public abstract class FluidTypeFlowing extends FluidType {
+             Fluid fluid1 = this.a((IWorldReader) world, blockposition, world.getType(blockposition));
+             int i = this.a(world, blockposition, fluid, fluid1);
+ 
+-            if (fluid1.isEmpty()) {
++            if (fluid1.isEmpty() || canFastDrain(world, blockposition)) { // Paper - Fast draining
+                 fluid = fluid1;
+                 // CraftBukkit start
+                 FluidLevelChangeEvent event = CraftEventFactory.callFluidLevelChangeEvent(world, blockposition, Blocks.AIR.getBlockData());
+@@ -508,6 +508,51 @@ public abstract class FluidTypeFlowing extends FluidType {
+         this.a((GeneratorAccess) world, blockposition, fluid);
+     }
+ 
++    // Paper start
++    /**
++     * Paper - Checks surrounding blocks to determine if block can be fast drained
++     */
++    public boolean canFastDrain(World world, BlockPosition position) {
++        boolean result = false;
++        Fluid data = world.getFluid(position);
++        if (this. == Material.WATER) {
++            if (world.paperConfig.fastDrainWater) {
++                result = true;
++                if (getData(world, position.down()) < 0) {
++                    result = false;
++                } else if (world.getType(position.north()).getBlock().getBlockData().getMaterial() == Material.WATER && getData(world, position.north()) < data) {
++                    result = false;
++                } else if (world.getType(position.south()).getBlock().getBlockData().getMaterial() == Material.WATER && getData(world, position.south()) < data) {
++                    result = false;
++                } else if (world.getType(position.west()).getBlock().getBlockData().getMaterial() == Material.WATER && getData(world, position.west()) < data) {
++                    result = false;
++                } else if (world.getType(position.east()).getBlock().getBlockData().getMaterial() == Material.WATER && getData(world, position.east()) < data) {
++                    result = false;
++                }
++            }
++        } else if (this.material == Material.LAVA) {
++            if (world.paperConfig.fastDrainLava) {
++                result = true;
++                if (getData(world, position.down()) < 0 || world.getType(position.up()).getBlock().getBlockData().getMaterial() != Material.AIR) {
++                    result = false;
++                } else if (world.getType(position.north()).getBlock().getBlockData().getMaterial() == Material.LAVA && getData(world, position.north()) < data) {
++                    result = false;
++                } else if (world.getType(position.south()).getBlock().getBlockData().getMaterial() == Material.LAVA && getData(world, position.south()) < data) {
++                    result = false;
++                } else if (world.getType(position.west()).getBlock().getBlockData().getMaterial() == Material.LAVA && getData(world, position.west()) < data) {
++                    result = false;
++                } else if (world.getType(position.east()).getBlock().getBlockData().getMaterial() == Material.LAVA && getData(world, position.east()) < data) {
++                    result = false;
++                }
++            }
++        }
++        return result;
++    }
++    private int getFluidLevel(IBlockAccess iblockaccess, BlockPosition blockposition) {
++        Fluid fluid = iblockaccess.getFluid(blockposition);
++        return fluid.isEmpty() ? -1 : FluidTypeFlowing.e(fluid);
++    }
++    // Paper end
+     protected static int e(Fluid fluid) {
+         return fluid.isSource() ? 0 : 8 - Math.min(fluid.g(), 8) + ((Boolean) fluid.get(FluidTypeFlowing.FALLING) ? 8 : 0);
+     }
 diff --git a/src/main/java/net/minecraft/server/FluidTypeLava.java b/src/main/java/net/minecraft/server/FluidTypeLava.java
-index ff677c59e..564ef1090 100644
+index ff677c59e..04c95c267 100644
 --- a/src/main/java/net/minecraft/server/FluidTypeLava.java
 +++ b/src/main/java/net/minecraft/server/FluidTypeLava.java
-@@ -131,12 +131,25 @@ public abstract class FluidTypeLava extends FluidTypeFlowing {
-     public int a(IWorldReader iworldreader) {
-         return iworldreader.getWorldProvider().h() ? 10 : 30;
-     }
-+    /**
-+     * Paper - Get flow speed. Throttle if its water and flowing adjacent to lava
-+     */
-+    public int getFlowSpeed(World world, BlockPosition blockposition) {
-+        if ((
-+            world.getType(blockposition.north(1)).getBlock().material == Material.LAVA ||
-+                world.getType(blockposition.south(1)).getBlock().material == Material.LAVA ||
-+                world.getType(blockposition.west(1)).getBlock().material == Material.LAVA ||
-+                world.getType(blockposition.east(1)).getBlock().material == Material.LAVA)) {
-+            return world.paperConfig.waterOverLavaFlowSpeed;
-+        }
-+        return this.getFlowSpeed(world);
-+    }
- 
-     @Override
+@@ -136,7 +136,7 @@ public abstract class FluidTypeLava extends FluidTypeFlowing {
      public int a(World world, BlockPosition blockposition, Fluid fluid, Fluid fluid1) {
          int i = this.a((IWorldReader) world);
  
 -        if (!fluid.isEmpty() && !fluid1.isEmpty() && !(Boolean) fluid.get(FluidTypeLava.FALLING) && !(Boolean) fluid1.get(FluidTypeLava.FALLING) && fluid1.getHeight(world, blockposition) > fluid.getHeight(world, blockposition) && world.getRandom().nextInt(4) != 0) {
-+        if (!world.paperConfig.fastDrainLava && !fluid.isEmpty() && !fluid1.isEmpty() && !(Boolean) fluid.get(FluidTypeLava.FALLING) && !(Boolean) fluid1.get(FluidTypeLava.FALLING) && fluid1.getHeight(world, blockposition) > fluid.getHeight(world, blockposition) && world.getRandom().nextInt(4) != 0) { // Paper
++        if (!world.paperConfig.fastDrainLava && !fluid.isEmpty() && !fluid1.isEmpty() && !(Boolean) fluid.get(FluidTypeLava.FALLING) && !(Boolean) fluid1.get(FluidTypeLava.FALLING) && fluid1.getHeight(world, blockposition) > fluid.getHeight(world, blockposition) && world.getRandom().nextInt(4) != 0) {  // Paper - Fast draining
              i *= 4;
          }
  
