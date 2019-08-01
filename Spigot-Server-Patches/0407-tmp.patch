@@ -1,0 +1,56 @@
+From e28af5f380bff4ac714df25464a7afe4e5d7255a Mon Sep 17 00:00:00 2001
+From: kickash32 <kickash32@gmail.com>
+Date: Thu, 1 Aug 2019 06:07:30 +0500
+Subject: [PATCH] tmp
+
+
+diff --git a/src/main/java/com/destroystokyo/paper/PaperWorldConfig.java b/src/main/java/com/destroystokyo/paper/PaperWorldConfig.java
+index 318a470ee..b6108fece 100644
+--- a/src/main/java/com/destroystokyo/paper/PaperWorldConfig.java
++++ b/src/main/java/com/destroystokyo/paper/PaperWorldConfig.java
+@@ -562,4 +562,11 @@ public class PaperWorldConfig {
+     private void disableRelativeProjectileVelocity() {
+         disableRelativeProjectileVelocity = getBoolean("game-mechanics.disable-relative-projectile-velocity", false);
+     }
++
++    public boolean fastDrainLava;
++    public boolean fastDrainWater;
++    private void fastDrain() {
++        fastDrainLava = getBoolean("fast-drain.lava", false);
++        fastDrainWater = getBoolean("fast-drain.water", false);
++    }
+ }
+diff --git a/src/main/java/net/minecraft/server/FluidTypeLava.java b/src/main/java/net/minecraft/server/FluidTypeLava.java
+index ff677c59e..564ef1090 100644
+--- a/src/main/java/net/minecraft/server/FluidTypeLava.java
++++ b/src/main/java/net/minecraft/server/FluidTypeLava.java
+@@ -131,12 +131,25 @@ public abstract class FluidTypeLava extends FluidTypeFlowing {
+     public int a(IWorldReader iworldreader) {
+         return iworldreader.getWorldProvider().h() ? 10 : 30;
+     }
++    /**
++     * Paper - Get flow speed. Throttle if its water and flowing adjacent to lava
++     */
++    public int getFlowSpeed(World world, BlockPosition blockposition) {
++        if ((
++            world.getType(blockposition.north(1)).getBlock().material == Material.LAVA ||
++                world.getType(blockposition.south(1)).getBlock().material == Material.LAVA ||
++                world.getType(blockposition.west(1)).getBlock().material == Material.LAVA ||
++                world.getType(blockposition.east(1)).getBlock().material == Material.LAVA)) {
++            return world.paperConfig.waterOverLavaFlowSpeed;
++        }
++        return this.getFlowSpeed(world);
++    }
+ 
+     @Override
+     public int a(World world, BlockPosition blockposition, Fluid fluid, Fluid fluid1) {
+         int i = this.a((IWorldReader) world);
+ 
+-        if (!fluid.isEmpty() && !fluid1.isEmpty() && !(Boolean) fluid.get(FluidTypeLava.FALLING) && !(Boolean) fluid1.get(FluidTypeLava.FALLING) && fluid1.getHeight(world, blockposition) > fluid.getHeight(world, blockposition) && world.getRandom().nextInt(4) != 0) {
++        if (!world.paperConfig.fastDrainLava && !fluid.isEmpty() && !fluid1.isEmpty() && !(Boolean) fluid.get(FluidTypeLava.FALLING) && !(Boolean) fluid1.get(FluidTypeLava.FALLING) && fluid1.getHeight(world, blockposition) > fluid.getHeight(world, blockposition) && world.getRandom().nextInt(4) != 0) { // Paper
+             i *= 4;
+         }
+ 
+-- 
+2.22.0
+
