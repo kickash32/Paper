@@ -1,0 +1,405 @@
+From d38320547385d37323d549c4536d2884f8ca7833 Mon Sep 17 00:00:00 2001
+From: Phoenix616 <mail@moep.tv>
+Date: Wed, 27 Nov 2019 19:07:21 +0100
+Subject: [PATCH] Add ability to find features with paper's async chunks
+
+This implements World#findNearestMapFeatureAsync method and adds a
+config option to use the async search when creating treasure maps
+instead of blocking the main thread with loading and generating chunks.
+
+This has the slight downside that the items might break if interacted
+with before the async search is finished. That should normally not occur,
+especially on pre-generated worlds.
+
+diff --git a/src/main/java/com/destroystokyo/paper/PaperWorldConfig.java b/src/main/java/com/destroystokyo/paper/PaperWorldConfig.java
+index b309fdaba..1c63def16 100644
+--- a/src/main/java/com/destroystokyo/paper/PaperWorldConfig.java
++++ b/src/main/java/com/destroystokyo/paper/PaperWorldConfig.java
+@@ -645,4 +645,12 @@ public class PaperWorldConfig {
+         disableHopperMoveEvents = getBoolean("hopper.disable-move-event", disableHopperMoveEvents);
+         log("Hopper Move Item Events: " + (disableHopperMoveEvents ? "disabled" : "enabled"));
+     }
++
++    public boolean asyncTreasureMaps = false;
++    private void asyncTreasureMaps() {
++        asyncTreasureMaps = getBoolean("async-treasure-maps", asyncTreasureMaps);
++        if (asyncTreasureMaps) {
++            Bukkit.getLogger().info("Async treasure map generation is enabled");
++        }
++    }
+ }
+diff --git a/src/main/java/net/minecraft/server/ChunkGenerator.java b/src/main/java/net/minecraft/server/ChunkGenerator.java
+index a87f45325..34dd891b9 100644
+--- a/src/main/java/net/minecraft/server/ChunkGenerator.java
++++ b/src/main/java/net/minecraft/server/ChunkGenerator.java
+@@ -64,11 +64,18 @@ public abstract class ChunkGenerator<C extends GeneratorSettingsDefault> {
+ 
+     @Nullable
+     public BlockPosition findNearestMapFeature(World world, String s, BlockPosition blockposition, int i, boolean flag) {
+-        StructureGenerator<?> structuregenerator = (StructureGenerator) WorldGenerator.ao.get(s.toLowerCase(Locale.ROOT));
++        StructureGenerator<?> structuregenerator = (StructureGenerator) WorldGenerator.ao.get(s.toLowerCase(Locale.ROOT)); // Paper - force conflict
+ 
+         return structuregenerator != null ? structuregenerator.getNearestGeneratedFeature(world, this, blockposition, i, flag) : null;
+     }
+ 
++    // Paper start - async feature search. adapted logic from findNearestMapFeature
++    public void findNearestMapFeatureAsync(World world, String s, BlockPosition blockposition, int i, boolean flag, java.util.function.Consumer<BlockPosition> onComplete) {
++        StructureGenerator<?> structuregenerator = (StructureGenerator) WorldGenerator.ao.get(s.toLowerCase(Locale.ROOT));
++        if (structuregenerator != null) structuregenerator.getNearestGeneratedFeatureAsync(world, this, blockposition, i, flag, onComplete);
++    }
++    // Paper end
++
+     public void addDecorations(RegionLimitedWorldAccess regionlimitedworldaccess) {
+         int i = regionlimitedworldaccess.a();
+         int j = regionlimitedworldaccess.b();
+diff --git a/src/main/java/net/minecraft/server/ChunkProviderFlat.java b/src/main/java/net/minecraft/server/ChunkProviderFlat.java
+index d1d332d23..7a89dbfb0 100644
+--- a/src/main/java/net/minecraft/server/ChunkProviderFlat.java
++++ b/src/main/java/net/minecraft/server/ChunkProviderFlat.java
+@@ -82,7 +82,7 @@ public class ChunkProviderFlat extends ChunkGenerator<GeneratorSettingsFlat> {
+ 
+             if (iblockdata != null && !HeightMap.Type.MOTION_BLOCKING.d().test(iblockdata)) {
+                 ((GeneratorSettingsFlat) this.settings).a(l);
+-                chunkproviderflat_a.a(WorldGenStage.Decoration.TOP_LAYER_MODIFICATION, WorldGenerator.FILL_LAYER.b((WorldGenFeatureConfiguration) (new WorldGenFeatureFillConfiguration(l, iblockdata))).a(WorldGenDecorator.a.a((WorldGenFeatureDecoratorConfiguration) WorldGenFeatureDecoratorConfiguration.e)));
++                chunkproviderflat_a.a(WorldGenStage.Decoration.TOP_LAYER_MODIFICATION, WorldGenerator.FILL_LAYER.b((WorldGenFeatureFillConfiguration) new WorldGenFeatureFillConfiguration(l, iblockdata)).a(WorldGenDecorator.a.a((WorldGenFeatureEmptyConfiguration2) WorldGenFeatureDecoratorConfiguration.e))); // Paper - decompile fix
+             }
+         }
+ 
+@@ -162,9 +162,18 @@ public class ChunkProviderFlat extends ChunkGenerator<GeneratorSettingsFlat> {
+     @Nullable
+     @Override
+     public BlockPosition findNearestMapFeature(World world, String s, BlockPosition blockposition, int i, boolean flag) {
+-        return !((GeneratorSettingsFlat) this.settings).w().keySet().contains(s.toLowerCase(Locale.ROOT)) ? null : super.findNearestMapFeature(world, s, blockposition, i, flag);
++        return !((GeneratorSettingsFlat) this.settings).w().keySet().contains(s.toLowerCase(Locale.ROOT)) ? null : super.findNearestMapFeature(world, s, blockposition, i, flag); // Paper - force conflict
+     }
+ 
++    // Paper start - async feature search. adapted logic from findNearestMapFeature
++    @Override
++    public void findNearestMapFeatureAsync(World world, String s, BlockPosition blockposition, int i, boolean flag, java.util.function.Consumer<BlockPosition> onComplete) {
++        if (this.settings.w().keySet().contains(s.toLowerCase(Locale.ROOT))) {
++            super.findNearestMapFeatureAsync(world, s, blockposition, i, flag, onComplete);
++        }
++    }
++    // Paper end
++
+     class a extends BiomeBase {
+ 
+         protected a(WorldGenSurfaceComposite worldgensurfacecomposite, BiomeBase.Precipitation biomebase_precipitation, BiomeBase.Geography biomebase_geography, float f, float f1, float f2, float f3, int i, int j, String s) {
+diff --git a/src/main/java/net/minecraft/server/ItemStack.java b/src/main/java/net/minecraft/server/ItemStack.java
+index 182633bca..80b1e8e47 100644
+--- a/src/main/java/net/minecraft/server/ItemStack.java
++++ b/src/main/java/net/minecraft/server/ItemStack.java
+@@ -665,6 +665,7 @@ public final class ItemStack {
+         return this.getItem().g(this);
+     }
+ 
++    public ItemStack setName(@Nullable IChatBaseComponent ichatbasecomponent) { return this.a(ichatbasecomponent); } // Paper - OBFHELPER
+     public ItemStack a(@Nullable IChatBaseComponent ichatbasecomponent) {
+         NBTTagCompound nbttagcompound = this.a("display");
+ 
+diff --git a/src/main/java/net/minecraft/server/ItemWorldMap.java b/src/main/java/net/minecraft/server/ItemWorldMap.java
+index 189e6d753..28c5b8af0 100644
+--- a/src/main/java/net/minecraft/server/ItemWorldMap.java
++++ b/src/main/java/net/minecraft/server/ItemWorldMap.java
+@@ -47,13 +47,34 @@ public class ItemWorldMap extends ItemWorldMapBase {
+     }
+ 
+     private static WorldMap a(ItemStack itemstack, World world, int i, int j, int k, boolean flag, boolean flag1, DimensionManager dimensionmanager) {
++    // Paper start - OBFHELPER and split in multiple, public methods
++        return initializeMap(itemstack, world, i, j, k, flag, flag1, dimensionmanager);
++    }
++
++    private static WorldMap initializeMap(ItemStack itemstack, World world, int i, int j, int k, boolean flag, boolean flag1, DimensionManager dimensionmanager) {
++        WorldMap worldmap = newWorldMap(world);
++        worldmap.setup(i, j, k, flag, flag1, dimensionmanager);
++        worldmap = addToItem(itemstack, worldmap);
++        return callInitializeEvent(worldmap);
++    }
++
++    public static WorldMap newWorldMap(World world) {
+         int l = world.getWorldMapCount();
+         WorldMap worldmap = new WorldMap(a(l));
+ 
+-        worldmap.a(i, j, k, flag, flag1, dimensionmanager);
++//        worldmap.a(i, j, k, flag, flag1, dimensionmanager);
+         world.a(worldmap);
+-        itemstack.getOrCreateTag().setInt("map", l);
++//        itemstack.getOrCreateTag().setInt("map", l);
++        return worldmap;
++    }
++
++    public static WorldMap addToItem(ItemStack itemstack, WorldMap worldmap) {
++        itemstack.getOrCreateTag().setInt("map", worldmap.mapId);
++        return worldmap;
++    }
+ 
++    public static WorldMap callInitializeEvent(WorldMap worldmap) {
++        // Paper end
+         // CraftBukkit start
+         MapInitializeEvent event = new MapInitializeEvent(worldmap.mapView);
+         Bukkit.getServer().getPluginManager().callEvent(event);
+diff --git a/src/main/java/net/minecraft/server/LootItemFunctionExplorationMap.java b/src/main/java/net/minecraft/server/LootItemFunctionExplorationMap.java
+index fa11b2fc6..bd42b7d8a 100644
+--- a/src/main/java/net/minecraft/server/LootItemFunctionExplorationMap.java
++++ b/src/main/java/net/minecraft/server/LootItemFunctionExplorationMap.java
+@@ -42,14 +42,30 @@ public class LootItemFunctionExplorationMap extends LootItemFunctionConditional
+ 
+             if (blockposition != null) {
+                 WorldServer worldserver = loottableinfo.c();
+-                BlockPosition blockposition1 = worldserver.a(this.d, blockposition, this.g, this.h);
++                // Paper start - Async explorer maps
++                if (worldserver.paperConfig.asyncTreasureMaps) {
++                    ItemStack itemstack1 = new ItemStack(Items.FILLED_MAP);
++                    WorldMap worldMap = ItemWorldMap.newWorldMap(worldserver);
++                    ItemWorldMap.addToItem(itemstack1, worldMap);
++                    itemstack1.setName((new ChatMessage("filled_map." + this.d.toLowerCase(Locale.ROOT))));
++                    worldserver.findNearestMapFeatureAsync(this.d, blockposition, this.g, this.h, blockposition1 -> {
++                        if (blockposition1 != null) {
++                            worldMap.setup(blockposition1.getX(), blockposition1.getZ(), this.f, true, true, worldserver.worldProvider.getDimensionManager());
++                                ItemWorldMap.applySepiaFilter(worldserver, itemstack1);
++                            worldMap.addDecoration(itemstack1, blockposition1, "+", this.e);
++                        }
++                    });
++                    return itemstack1;
++                }
++                // Paper end
++                BlockPosition blockposition1 = worldserver.a(this.d, blockposition, this.g, this.h); // Paper - force conflict
+ 
+                 if (blockposition1 != null) {
+-                    ItemStack itemstack1 = ItemWorldMap.createFilledMapView(worldserver, blockposition1.getX(), blockposition1.getZ(), this.f, true, true);
++                    ItemStack itemstack1 = ItemWorldMap.createFilledMapView(worldserver, blockposition1.getX(), blockposition1.getZ(), this.f, true, true); // Paper - force conflict
+ 
+                     ItemWorldMap.applySepiaFilter(worldserver, itemstack1);
+-                    WorldMap.decorateMap(itemstack1, blockposition1, "+", this.e);
+-                    itemstack1.a((IChatBaseComponent) (new ChatMessage("filled_map." + this.d.toLowerCase(Locale.ROOT), new Object[0])));
++                    WorldMap.decorateMap(itemstack1, blockposition1, "+", this.e); // Paper - force conflict
++                    itemstack1.a((IChatBaseComponent) (new ChatMessage("filled_map." + this.d.toLowerCase(Locale.ROOT), new Object[0]))); // Paper - force conflict
+                     return itemstack1;
+                 }
+             }
+@@ -69,7 +85,7 @@ public class LootItemFunctionExplorationMap extends LootItemFunctionConditional
+         }
+ 
+         public void a(JsonObject jsonobject, LootItemFunctionExplorationMap lootitemfunctionexplorationmap, JsonSerializationContext jsonserializationcontext) {
+-            super.a(jsonobject, (LootItemFunctionConditional) lootitemfunctionexplorationmap, jsonserializationcontext);
++            super.a(jsonobject, lootitemfunctionexplorationmap, jsonserializationcontext); // Paper - decompile fix
+             if (!lootitemfunctionexplorationmap.d.equals("Buried_Treasure")) {
+                 jsonobject.add("destination", jsonserializationcontext.serialize(lootitemfunctionexplorationmap.d));
+             }
+diff --git a/src/main/java/net/minecraft/server/StructureGenerator.java b/src/main/java/net/minecraft/server/StructureGenerator.java
+index e8ce2ecf2..f6a05311f 100644
+--- a/src/main/java/net/minecraft/server/StructureGenerator.java
++++ b/src/main/java/net/minecraft/server/StructureGenerator.java
+@@ -143,6 +143,82 @@ public abstract class StructureGenerator<C extends WorldGenFeatureConfiguration>
+         }
+     }
+ 
++    // Paper start - async feature search. adapted logic from getNearestGeneratedFeature TODO
++    public void getNearestGeneratedFeatureAsync(World world, ChunkGenerator<? extends GeneratorSettingsDefault> chunkgenerator, BlockPosition blockposition, int i, boolean flag, java.util.function.Consumer<BlockPosition> onComplete) {
++        if (!chunkgenerator.getWorldChunkManager().a(this)) {
++            onComplete.accept(null);
++        } else {
++            int j = blockposition.getX() >> 4;
++            int k = blockposition.getZ() >> 4;
++            SeededRandom seededrandom = new SeededRandom();
++                java.util.Deque<ChunkCoordIntPair> chunksToCheck;
++                java.util.Collection<Integer> finished = java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
++                java.util.concurrent.CompletableFuture<BlockPosition> future = new java.util.concurrent.CompletableFuture<>();
++            future.thenAccept(onComplete);
++            for (int l = 0; l <= i; l++) {
++                int i1 = -l;
++                    chunksToCheck = new java.util.ArrayDeque<>();
++                while (true) {
++                    if (i1 <= l) {
++                        boolean flag1 = i1 == -l || i1 == l;
++                        for (int j1 = -l; j1 <= l; ++j1) {
++                            boolean flag2 = j1 == -l || j1 == l;
++                            if (flag1 || flag2) {
++                                ChunkCoordIntPair chunkcoordintpair = this.a(chunkgenerator, seededrandom, j, k, i1, j1);
++                                if (!world.getWorldBorder().isChunkInBounds(chunkcoordintpair.x, chunkcoordintpair.z)) { continue; } // Paper
++                                chunksToCheck.add(chunkcoordintpair);
++                                if (l == 0) {
++                                    break;
++                                }
++                            }
++                        }
++                        if (l != 0) {
++                            ++i1;
++                            continue;
++                        }
++                    }
++                        break;
++                }
++                int finalL = l;
++                checkForFeature(world, chunksToCheck, flag, () -> {
++                    finished.add(finalL);
++                    if (finished.size() == i + 1) {
++                        future.complete(null);
++                    }
++                        }, future);
++            }
++        }
++    }
++
++    private void checkForFeature(World world, java.util.Deque<ChunkCoordIntPair> chunksToCheck, boolean flag, Runnable onNotFound, java.util.concurrent.CompletableFuture<BlockPosition> future) {
++        if (future.isDone()) {
++            return;
++        }
++        ChunkCoordIntPair chunkcoordintpair = chunksToCheck.pollFirst();
++        if (chunkcoordintpair == null) {
++            onNotFound.run();
++            return;
++        }
++            ((ChunkProviderServer) world.getChunkProvider()).getChunkAtAsynchronously(chunkcoordintpair.x, chunkcoordintpair.z, true, chunk -> {
++                if (chunk != null) {
++                    StructureStart structurestart = chunk.a(this.b());
++                    if (structurestart != null && structurestart.e() && !future.isDone()) {
++                        if (flag && structurestart.h()) {
++                            structurestart.i();
++                            future.complete(structurestart.a());
++                            return;
++                        }
++                        if (!flag) {
++                            future.complete(structurestart.a());
++                            return;
++                        }
++                    }
++                }
++                    checkForFeature(world, chunksToCheck, flag, onNotFound, future);
++            });
++    }
++    // Paper end
++
+     private List<StructureStart> a(GeneratorAccess generatoraccess, int i, int j) {
+         List<StructureStart> list = Lists.newArrayList();
+         IChunkAccess ichunkaccess = generatoraccess.getChunkAt(i, j, ChunkStatus.STRUCTURE_REFERENCES);
+diff --git a/src/main/java/net/minecraft/server/VillagerTrades.java b/src/main/java/net/minecraft/server/VillagerTrades.java
+index 4764ffef7..bd9814666 100644
+--- a/src/main/java/net/minecraft/server/VillagerTrades.java
++++ b/src/main/java/net/minecraft/server/VillagerTrades.java
+@@ -93,15 +93,33 @@ public class VillagerTrades {
+             } else {
+                 WorldServer worldserver = (WorldServer) entity.world;
+                 if (!worldserver.paperConfig.enableTreasureMaps) return null; //Paper
+-                BlockPosition blockposition = worldserver.a(this.b, new BlockPosition(entity), 100, !worldserver.paperConfig.treasureMapsAlreadyDiscovered); //Paper
++
++                // Paper start - Async explorer maps
++                if (worldserver.paperConfig.asyncTreasureMaps) {
++                    ItemStack itemstack = new ItemStack(Items.FILLED_MAP);
++                    WorldMap worldMap = ItemWorldMap.newWorldMap(worldserver);
++                    ItemWorldMap.addToItem(itemstack, worldMap);
++                    itemstack.setName((new ChatMessage("filled_map." + this.b.toLowerCase(Locale.ROOT))));
++                    worldserver.findNearestMapFeatureAsync(this.b, new BlockPosition(entity), 100, !worldserver.paperConfig.treasureMapsAlreadyDiscovered, blockposition -> {
++                        if (blockposition != null) {
++                            worldMap.setup(blockposition.getX(), blockposition.getZ(), (byte) 2, true, true, worldserver.worldProvider.getDimensionManager());
++                                ItemWorldMap.applySepiaFilter(worldserver, itemstack);
++                            worldMap.addDecoration(itemstack, blockposition, "+", this.c);
++                        }
++                    });
++                    return new MerchantRecipe(new ItemStack(Items.EMERALD, this.a), new ItemStack(Items.COMPASS), itemstack, this.d, this.e, 0.2F);
++                }
++                // Paper end
++
++                BlockPosition blockposition = worldserver.a(this.b, new BlockPosition(entity), 100, !worldserver.paperConfig.treasureMapsAlreadyDiscovered); //Paper // Paper - force conflict
+ 
+                 if (blockposition != null) {
+                     ItemStack itemstack = ItemWorldMap.createFilledMapView(worldserver, blockposition.getX(), blockposition.getZ(), (byte) 2, true, true);
+ 
+                     ItemWorldMap.applySepiaFilter(worldserver, itemstack);
+-                    WorldMap.decorateMap(itemstack, blockposition, "+", this.c);
++                    WorldMap.decorateMap(itemstack, blockposition, "+", this.c); // Paper - force conflict
+                     itemstack.a((IChatBaseComponent) (new ChatMessage("filled_map." + this.b.toLowerCase(Locale.ROOT), new Object[0])));
+-                    return new MerchantRecipe(new ItemStack(Items.EMERALD, this.a), new ItemStack(Items.COMPASS), itemstack, this.d, this.e, 0.2F);
++                    return new MerchantRecipe(new ItemStack(Items.EMERALD, this.a), new ItemStack(Items.COMPASS), itemstack, this.d, this.e, 0.2F); // Paper - force conflict
+                 } else {
+                     return null;
+                 }
+diff --git a/src/main/java/net/minecraft/server/WorldMap.java b/src/main/java/net/minecraft/server/WorldMap.java
+index 2f1be1995..127513cf8 100644
+--- a/src/main/java/net/minecraft/server/WorldMap.java
++++ b/src/main/java/net/minecraft/server/WorldMap.java
+@@ -18,6 +18,7 @@ import org.bukkit.craftbukkit.util.CraftChatMessage;
+ 
+ public class WorldMap extends PersistentBase {
+ 
++    public final int mapId; // Paper - store int id
+     public int centerX;
+     public int centerZ;
+     public DimensionManager map;
+@@ -41,6 +42,7 @@ public class WorldMap extends PersistentBase {
+ 
+     public WorldMap(String s) {
+         super(s);
++        this.mapId = Integer.parseInt(s.substring(4)); // Paper - store int id, "map_".length() == 4
+         // CraftBukkit start
+         mapView = new CraftMapView(this);
+         server = (CraftServer) org.bukkit.Bukkit.getServer();
+@@ -48,6 +50,7 @@ public class WorldMap extends PersistentBase {
+         // CraftBukkit end
+     }
+ 
++    public void setup(int i, int j, int k, boolean flag, boolean flag1, DimensionManager dimensionmanager) { this.a(i, j, k, flag, flag1, dimensionmanager); } // Paper - OBFHELPER
+     public void a(int i, int j, int k, boolean flag, boolean flag1, DimensionManager dimensionmanager) {
+         this.scale = (byte) k;
+         this.a((double) i, (double) j, this.scale);
+@@ -278,6 +281,14 @@ public class WorldMap extends PersistentBase {
+ 
+     }
+ 
++    // Paper start - Async explorer maps, this forward to the decorateMap method and duplicates some of the code from the method below
++    public void addDecoration(ItemStack itemstack, BlockPosition blockposition, String s, MapIcon.Type mapicon_type) {
++        decorateMap(itemstack, blockposition, s, mapicon_type);
++                if (!decorations.containsKey(s)) {
++                        a(mapicon_type, null, s, blockposition.getX(), blockposition.getY(), 180.0D, null);
++                    }
++            }
++    // Paper end
+     private void a(MapIcon.Type mapicon_type, @Nullable GeneratorAccess generatoraccess, String s, double d0, double d1, double d2, @Nullable IChatBaseComponent ichatbasecomponent) {
+         int i = 1 << this.scale;
+         float f = (float) (d0 - (double) this.centerX) / (float) i;
+diff --git a/src/main/java/net/minecraft/server/WorldServer.java b/src/main/java/net/minecraft/server/WorldServer.java
+index 70cbff313..3e6b9cc60 100644
+--- a/src/main/java/net/minecraft/server/WorldServer.java
++++ b/src/main/java/net/minecraft/server/WorldServer.java
+@@ -1656,10 +1656,16 @@ public class WorldServer extends World {
+         return (Entity) this.entitiesByUUID.get(uuid);
+     }
+ 
++    public BlockPosition findNearestMapFeature(String s, BlockPosition blockposition, int i, boolean flag) { return a(s, blockposition, i, flag); } // Paper - OBFHELPER
+     @Nullable
+     public BlockPosition a(String s, BlockPosition blockposition, int i, boolean flag) {
+         return this.getChunkProvider().getChunkGenerator().findNearestMapFeature(this, s, blockposition, i, flag);
+     }
++    // Paper start - async feature search. adapted logic from findNearestMapFeature
++    public void findNearestMapFeatureAsync(String s, BlockPosition blockposition, int i, boolean flag, java.util.function.Consumer<BlockPosition> onComplete) {
++        this.getChunkProvider().getChunkGenerator().findNearestMapFeatureAsync(this, s, blockposition, i, flag, onComplete);
++    }
++    // Paper end
+ 
+     @Override
+     public CraftingManager getCraftingManager() {
+diff --git a/src/main/java/org/bukkit/craftbukkit/CraftWorld.java b/src/main/java/org/bukkit/craftbukkit/CraftWorld.java
+index 87395de25..be36aa3cb 100644
+--- a/src/main/java/org/bukkit/craftbukkit/CraftWorld.java
++++ b/src/main/java/org/bukkit/craftbukkit/CraftWorld.java
+@@ -2376,6 +2376,17 @@ public class CraftWorld implements World {
+         return (nearest == null) ? null : new Location(this, nearest.getX(), nearest.getY(), nearest.getZ());
+     }
+ 
++    // Paper start - async feature search. adapted logic from findNearestMapFeature
++    public CompletableFuture<Location> locateNearestStructureAsync(Location origin, StructureType structureType, int radius, boolean findUnexplored) {
++        BlockPosition originPos = new BlockPosition(origin.getX(), origin.getY(), origin.getZ());
++        CompletableFuture<Location> ret = new CompletableFuture<>();
++        getHandle().getChunkProvider().getChunkGenerator().findNearestMapFeatureAsync(getHandle(), structureType.getName(), originPos, radius, findUnexplored, nearest -> {
++            ret.complete((nearest == null) ? null : new Location(this, nearest.getX(), nearest.getY(), nearest.getZ()));
++        });
++        return ret;
++    }
++    // Paper end
++
+     @Override
+     public Raid locateNearestRaid(Location location, int radius) {
+         Validate.notNull(location, "Location cannot be null");
+-- 
+2.22.0
+
